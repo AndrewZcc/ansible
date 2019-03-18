@@ -11,6 +11,7 @@ DOCUMENTATION = '''
     author:
         - Remy Leone (@sieben)
         - Anthony Ruhier (@Anthony25)
+        - Nikhil Singh Baliyan (@nikkytub)
     short_description: NetBox inventory source
     description:
         - Get inventory hosts from NetBox
@@ -31,6 +32,13 @@ DOCUMENTATION = '''
                 - Allows connection when SSL certificates are not valid. Set to C(false) when certificates are not trusted.
             default: True
             type: boolean
+        config_context:
+            description:
+                - If True, it adds config-context in host vars.
+                - Config-context enables the association of arbitrary data to devices and virtual machines grouped by
+                  region, site, role, platform, and/or tenant. Please check official netbox docs for more info.
+            default: False
+            type: boolean
         token:
             required: True
             description: NetBox token.
@@ -49,6 +57,7 @@ DOCUMENTATION = '''
                 - device_roles
                 - device_types
                 - manufacturers
+                - platforms
             default: []
         query_filters:
             description: List of parameters passed to the query string (Multiple values may be separated by commas)
@@ -70,6 +79,8 @@ EXAMPLES = '''
 
 plugin: netbox
 api_endpoint: http://localhost:8000
+validate_certs: True
+config_context: False
 group_by:
   - device_roles
 query_filters:
@@ -151,7 +162,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
     NAME = 'netbox'
 
     def _fetch_information(self, url):
-        response = open_url(url, headers=self.headers, timeout=self.timeout)
+        response = open_url(url, headers=self.headers, timeout=self.timeout, validate_certs=self.validate_certs)
 
         try:
             raw_data = to_text(response.read(), errors='surrogate_or_strict')
@@ -194,7 +205,9 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             "memory": self.extract_memory,
             "vcpus": self.extract_vcpus,
             "device_roles": self.extract_device_role,
+            "platforms": self.extract_platform,
             "device_types": self.extract_device_type,
+            "config_context": self.extract_config_context,
             "manufacturers": self.extract_manufacturer
         }
 
@@ -206,6 +219,12 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
     def extract_memory(self, host):
         return host.get("memory")
+
+    def extract_platform(self, host):
+        try:
+            return self.platforms_lookup[host["platform"]["id"]]
+        except Exception:
+            return
 
     def extract_device_type(self, host):
         try:
@@ -233,7 +252,19 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
     def extract_device_role(self, host):
         try:
-            return [self.device_roles_lookup[host["device_role"]["id"]]]
+            if 'device_role' in host:
+                return [self.device_roles_lookup[host["device_role"]["id"]]]
+            elif 'role' in host:
+                return [self.device_roles_lookup[host["role"]["id"]]]
+        except Exception:
+            return
+
+    def extract_config_context(self, host):
+        try:
+            if self.config_context:
+                url = self.api_endpoint + "/api/dcim/devices/" + str(host["id"])
+                device_lookup = self._fetch_information(url)
+                return [device_lookup["config_context"]]
         except Exception:
             return
 
@@ -267,38 +298,43 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
     def extract_tags(self, host):
         return host["tags"]
 
+    def refresh_platforms_lookup(self):
+        url = self.api_endpoint + "/api/dcim/platforms/?limit=0"
+        platforms = self.get_resource_list(api_url=url)
+        self.platforms_lookup = dict((platform["id"], platform["name"]) for platform in platforms)
+
     def refresh_sites_lookup(self):
-        url = urljoin(self.api_endpoint, "/api/dcim/sites/?limit=0")
+        url = self.api_endpoint + "/api/dcim/sites/?limit=0"
         sites = self.get_resource_list(api_url=url)
         self.sites_lookup = dict((site["id"], site["name"]) for site in sites)
 
     def refresh_regions_lookup(self):
-        url = urljoin(self.api_endpoint, "/api/dcim/regions/?limit=0")
+        url = self.api_endpoint + "/api/dcim/regions/?limit=0"
         regions = self.get_resource_list(api_url=url)
         self.regions_lookup = dict((region["id"], region["name"]) for region in regions)
 
     def refresh_tenants_lookup(self):
-        url = urljoin(self.api_endpoint, "/api/tenancy/tenants/?limit=0")
+        url = self.api_endpoint + "/api/tenancy/tenants/?limit=0"
         tenants = self.get_resource_list(api_url=url)
         self.tenants_lookup = dict((tenant["id"], tenant["name"]) for tenant in tenants)
 
     def refresh_racks_lookup(self):
-        url = urljoin(self.api_endpoint, "/api/dcim/racks/?limit=0")
+        url = self.api_endpoint + "/api/dcim/racks/?limit=0"
         racks = self.get_resource_list(api_url=url)
         self.racks_lookup = dict((rack["id"], rack["name"]) for rack in racks)
 
     def refresh_device_roles_lookup(self):
-        url = urljoin(self.api_endpoint, "/api/dcim/device-roles/?limit=0")
+        url = self.api_endpoint + "/api/dcim/device-roles/?limit=0"
         device_roles = self.get_resource_list(api_url=url)
         self.device_roles_lookup = dict((device_role["id"], device_role["name"]) for device_role in device_roles)
 
     def refresh_device_types_lookup(self):
-        url = urljoin(self.api_endpoint, "/api/dcim/device-types/?limit=0")
+        url = self.api_endpoint + "/api/dcim/device-types/?limit=0"
         device_types = self.get_resource_list(api_url=url)
         self.device_types_lookup = dict((device_type["id"], device_type["model"]) for device_type in device_types)
 
     def refresh_manufacturers_lookup(self):
-        url = urljoin(self.api_endpoint, "/api/dcim/manufacturers/?limit=0")
+        url = self.api_endpoint + "/api/dcim/manufacturers/?limit=0"
         manufacturers = self.get_resource_list(api_url=url)
         self.manufacturers_lookup = dict((manufacturer["id"], manufacturer["name"]) for manufacturer in manufacturers)
 
@@ -338,13 +374,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
     def refresh_url(self):
         query_parameters = [("limit", 0)]
-        query_parameters.extend(filter(lambda x: x,
-                                       map(self.validate_query_parameters, self.query_filters)))
-        self.device_url = self.api_endpoint + "/api/dcim/devices/" + "?" + urlencode(query_parameters)
-        self.virtual_machines_url = "".join([self.api_endpoint,
-                                             "/api/virtualization/virtual-machines/",
-                                             "?",
-                                             urlencode(query_parameters)])
+        if self.query_filters:
+            query_parameters.extend(filter(lambda x: x,
+                                           map(self.validate_query_parameters, self.query_filters)))
+        self.device_url = self.api_endpoint + "/api/dcim/devices/?" + urlencode(query_parameters)
+        self.virtual_machines_url = self.api_endpoint + "/api/virtualization/virtual-machines/?" + urlencode(query_parameters)
 
     def fetch_hosts(self):
         return chain(
@@ -412,8 +446,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
         # Netbox access
         token = self.get_option("token")
-        self.api_endpoint = self.get_option("api_endpoint")
+        # Handle extra "/" from api_endpoint configuration and trim if necessary, see PR#49943
+        self.api_endpoint = self.get_option("api_endpoint").strip('/')
         self.timeout = self.get_option("timeout")
+        self.validate_certs = self.get_option("validate_certs")
+        self.config_context = self.get_option("config_context")
         self.headers = {
             'Authorization': "Token %s" % token,
             'User-Agent': "ansible %s Python %s" % (ansible_version, python_version.split(' ')[0]),

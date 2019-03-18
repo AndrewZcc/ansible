@@ -115,7 +115,7 @@ RETURN = '''
 msg:
   description: Success or failure message
   returned: always
-  type: string
+  type: str
   sample: "Image file tranferred to device"
 '''
 
@@ -130,7 +130,7 @@ import os
 try:
     from ansible.module_utils.network.cnos import cnos
     HAS_LIB = True
-except:
+except Exception:
     HAS_LIB = False
 from ansible.module_utils.basic import AnsibleModule
 from collections import defaultdict
@@ -175,7 +175,7 @@ def doImageDownload(module, prompt, answer):
     elif(protocol == "tftp"):
         command = "copy " + protocol + " " + protocol + "://" + server
         command = command + "/" + imgPath + " system-image " + imgType
-        command = command + + " vrf management"
+        command = command + " vrf management"
         prompt = ['Confirm download operation',
                   'Do you want to change that to the standby image']
         answer = ['y', 'y']

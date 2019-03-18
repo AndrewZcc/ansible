@@ -150,7 +150,7 @@ RETURN = '''
 msg:
   description: Success or failure message
   returned: always
-  type: string
+  type: str
   sample: "Config file tranferred to server"
 '''
 
@@ -165,7 +165,7 @@ import os
 try:
     from ansible.module_utils.network.cnos import cnos
     HAS_LIB = True
-except:
+except Exception:
     HAS_LIB = False
 from ansible.module_utils.basic import AnsibleModule
 from collections import defaultdict
@@ -213,7 +213,7 @@ def doConfigBackUp(module, prompt, answer):
     elif(protocol == "tftp"):
         command = "copy " + configType + " " + protocol + " " + protocol
         command = command + "://" + server + "/" + confPath
-        command = command + + " vrf management\n"
+        command = command + " vrf management\n"
         # cnos.debugOutput(command)
         tftp_cmd = [{'command': command, 'prompt': None, 'answer': None}]
         cmd.extend(tftp_cmd)
